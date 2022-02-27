@@ -5,6 +5,7 @@ from __future__ import print_function, division
 from tensorflow import keras
 import tensorflow as tf
 
+tf.keras.backend.set_floatx('float64')
 
 class ConvLayer(tf.keras.Model):
     """
@@ -22,6 +23,7 @@ class ConvLayer(tf.keras.Model):
         nbr_fea_len: int
           Number of bond features.
         """
+        tf.keras.backend.set_floatx('float64')
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.nbr_fea_len = nbr_fea_len
@@ -33,19 +35,14 @@ class ConvLayer(tf.keras.Model):
         self.softplus2 = tf.keras.layers.Activation('softplus')
         self.bn1 = tf.keras.layers.BatchNormalization()
         self.bn2 = tf.keras.layers.BatchNormalization()
+        self.c = 0
         
-
     def call(self, atom_in_fea, nbr_fea, nbr_fea_idx):
-#        input
-        print(nbr_fea_idx.shape)
-        (N, M) = nbr_fea_idx.shape
-#        # convolution
-        atom_nbr_fea = atom_in_fea[nbr_fea_idx, :]
-        total_nbr_fea = tf.concat(
-            [tf.broadcast_to(tf.expand_dims(atom_in_fea, axis=1), [N, M, self.atom_fea_len]),
-             atom_nbr_fea, nbr_fea], axis=2)
-        
-        keras
+        N, M = nbr_fea_idx.shape
+        # convolution
+        atom_nbr_fea = tf.gather(atom_in_fea, tf.cast(nbr_fea_idx, tf.int64))
+        total_nbr_fea = tf.concat([tf.broadcast_to(tf.expand_dims(atom_in_fea, axis=1), [N, M, self.atom_fea_len]), atom_nbr_fea, nbr_fea], axis=2)
+        # keras
         total_gated_fea = self.fc_full(total_nbr_fea)
         total_gated_fea = tf.reshape(self.bn1(tf.reshape(total_gated_fea, [-1, self.atom_fea_len*2])), [N, M, self.atom_fea_len*2])
     
@@ -115,7 +112,8 @@ class CrystalGraphConvNet(tf.keras.Model):
             #self.logsoftmax = tf.nn.log_softmax(dim=1)
             #self.dropout = nn.Dropout()
 
-    def call(self, atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx):
+    def call(self, inputs):
+    #def call(self, atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx):
         """
         Forward pass
 
@@ -142,11 +140,7 @@ class CrystalGraphConvNet(tf.keras.Model):
           Atom hidden features after convolution
 
         """
-        #atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx = inputs[0], inputs[1], tf.cast(inputs[2], tf.int32), tf.cast(inputs[3], tf.int32)
-
-        print("atom_fea_len", len(atom_fea))
-        print("nbr_fea_len", len(nbr_fea))
-        print("nbr_fea_idx_len", len(nbr_fea_idx))
+        atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx = inputs[0], inputs[1], inputs[2], inputs[3]
         atom_fea = self.embedding(atom_fea)
         for conv_func in self.convs:
             atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx)
@@ -179,6 +173,6 @@ class CrystalGraphConvNet(tf.keras.Model):
           Mapping from the crystal idx to atom idx
         """
         assert sum([len(idx_map) for idx_map in crystal_atom_idx]) == atom_fea.shape[0]
-        summed_fea = [tf.math.reduce_mean(atom_fea[idx_map], axis=0, keepdims=True)
+        summed_fea = [tf.math.reduce_mean(tf.gather(atom_fea,idx_map), axis=0, keepdims=True)
                       for idx_map in crystal_atom_idx]
         return tf.concat(summed_fea, axis=0)

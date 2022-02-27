@@ -119,7 +119,7 @@ class Dataloader(tf.keras.utils.Sequence):
         batch_x, batch_y, batch_id = collate_pool(batch_dataset)
         #batch_x = [self.x[i] for i in indices]
         #batch_y = [self.y[i] for i in indices]
-        print("pass")
+        #print("pass")
         return batch_x, batch_y
 
     # epoch이 끝날때마다 실행
