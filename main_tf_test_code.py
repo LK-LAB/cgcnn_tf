@@ -1,20 +1,12 @@
-#import tensorflow as tf
-from cgcnn.data_tf import CIFData, CIFData_from_DataFrame, collate_pool, Dataloader
+import tensorflow as tf
+from cgcnn.data_tf import CIFData, collate_pool, Dataloader
 from cgcnn.model_tf import CrystalGraphConvNet
-import pandas as pd
-
-excel_file_name = "Test-file.xlsx"
 
 
 if __name__=="__main__":
+    dataset = CIFData("data/sample-regression/")
 
-    df = pd.read_excel(excel_file_name)
-    df.columns = ["id", "target", "cif"]
-
-    dataset = CIFData_from_DataFrame(df.iloc[:100])
-    #dataset = CIFData("data/sample-regression/")
-
-    batched = Dataloader(dataset, batch_size=8)
+    batched = Dataloader(dataset, batch_size=1)
 
     structures, _, _ = dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
@@ -27,5 +19,7 @@ if __name__=="__main__":
                             n_h=1)
 
     cgcnn_m.compile(optimizer='adam', loss='mean_squared_error',metrics=['mse', 'mae'], run_eagerly=True)
+
+
 
     history = cgcnn_m.fit(batched, epochs=3, use_multiprocessing=False)
