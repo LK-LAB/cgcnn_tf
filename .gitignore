@@ -1,0 +1,4 @@
+
+*.pyc
+data/sample-regression/.ipynb_checkpoints/id_prop-checkpoint.csv
+data/sample-classification/.ipynb_checkpoints/id_prop-checkpoint.csv
