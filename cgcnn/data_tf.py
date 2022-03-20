@@ -10,39 +10,104 @@ import warnings
 import numpy as np
 from pymatgen.core.structure import Structure
 import tensorflow as tf
-#from tensorflow.data import Dataset
 import math
 
-class Dataloader(tf.keras.utils.Sequence):
+try:
+    import ray
+    ray.init()
+    use_ray = True
+except:
+    print("Recommend to install ray for accelerate processing")
+    use_ray = False
 
-    def __init__(self, dataset, batch_size=1, shuffle=False):
-        #self.x, self.y = x_set, y_set
+def result_dir_make(target_path):
+    try:
+        if not os.path.exists(target_path):
+            print("Make result directory %s"%(target_path))
+            os.makedirs(target_path)
+            #print("")
+    except OSError:
+        print('Error: Failed to create directory : ' +  target_path)
+
+
+class Dataloader_original(tf.keras.utils.Sequence):
+
+    def __init__(self, dataset, batch_size=1, shuffle=False, return_id=False, drop_remainder=False):
         self.dataset = dataset
+        self.return_id = return_id
         self.batch_size = batch_size
+        self.drop_remainder = drop_remainder
         self.shuffle=shuffle
+        if self.drop_remainder == True:
+            self.shuffle == True
         self.on_epoch_end()
 
     def __len__(self):
         return math.ceil(len(self.dataset) / self.batch_size)
 
-		# batch 단위로 직접 묶어줘야 함
     def __getitem__(self, idx):
-				# sampler의 역할(index를 batch_size만큼 sampling해줌)
-        indices = self.indices[idx*self.batch_size:(idx+1)*self.batch_size]
+        indices = self.indices[idx]
 
-        batch_dataset = [self.dataset[i] for i in indices]
+        if self.use_ray == True:
+            batch_dataset = ray.get([CIFData_from_DataFrame_ray.remote(self.dataset.iloc[i]) for i in indices])
+        else:
+            batch_dataset = [self.dataset[i] for i in indices]
         batch_x, batch_y, batch_id = collate_pool(batch_dataset)
-        #batch_x = [self.x[i] for i in indices]
-        #batch_y = [self.y[i] for i in indices]
-        #print("pass")
-        return batch_x, batch_y
 
-    # epoch이 끝날때마다 실행
+        if self.return_id == False:
+            return batch_x, batch_y
+        else:
+            return batch_x, batch_y, batch_id
+
+    # epoch 끝날때마다 실행
     def on_epoch_end(self):
-        self.indices = np.arange(len(self.dataset))
-        if self.shuffle == True:
-            np.random.shuffle(self.indices)
+        indice = tf.data.Dataset.range(len(self.dataset)) 
+        indice = indice.shuffle(len(self.dataset), reshuffle_each_iteration=self.shuffle)
+        batch_indices = indice.batch(self.batch_size, drop_remainder=self.drop_remainder)
+        self.indices = list(batch_indices.as_numpy_iterator())
 
+
+class Dataloader_ray(tf.keras.utils.Sequence):
+
+    def __init__(self, dataset, batch_size=1, shuffle=False, return_id=False, drop_remainder=False):
+        self.dataset = dataset
+        self.return_id = return_id
+        self.batch_size = batch_size
+        self.drop_remainder = drop_remainder
+        self.shuffle=shuffle
+        if self.drop_remainder == True:
+            self.shuffle == True
+        self.on_epoch_end()
+
+        self.CIFData_from_DataFrame_ray = ray.remote(CIFData_from_DataFrame_ray)
+
+    def __len__(self):
+        return math.ceil(len(self.dataset) / self.batch_size)
+
+    def __getitem__(self, idx):
+        indices = self.indices[idx]
+
+        batch_dataset = ray.get([self.CIFData_from_DataFrame_ray.remote(self.dataset.iloc[i]) for i in indices])
+        batch_x, batch_y, batch_id = collate_pool(batch_dataset)
+
+        if self.return_id == False:
+            return batch_x, batch_y
+        else:
+            return batch_x, batch_y, batch_id
+
+    # epoch 끝날때마다 실행
+    def on_epoch_end(self):
+        indice = tf.data.Dataset.range(len(self.dataset)) 
+        indice = indice.shuffle(len(self.dataset), reshuffle_each_iteration=self.shuffle)
+        batch_indices = indice.batch(self.batch_size, drop_remainder=self.drop_remainder)
+        self.indices = list(batch_indices.as_numpy_iterator())
+
+
+def Dataloader(dataset, batch_size=1, shuffle=False, return_id=False, drop_remainder=False):
+    if use_ray == False:
+        return Dataloader_original(dataset, batch_size=batch_size, shuffle=shuffle, return_id=return_id, drop_remainder=drop_remainder)
+    else:
+        return Dataloader_ray(dataset, batch_size=batch_size, shuffle=shuffle, return_id=return_id, drop_remainder=drop_remainder)
 
 
 def collate_pool(dataset_list):
@@ -398,3 +463,45 @@ class CIFData_from_DataFrame(tf.keras.utils.Sequence):
         nbr_fea_idx = tf.constant(nbr_fea_idx)
         target = tf.constant([float(target)])
         return (atom_fea, nbr_fea, nbr_fea_idx), target , cif_id
+
+
+#@ray.remote
+def CIFData_from_DataFrame_ray(data, max_num_nbr=12, radius=8, dmin=0, step=0.2):
+    atom_init_file = os.path.join('atom_init.json')
+    assert os.path.exists(atom_init_file), 'atom_init.json does not exist!'
+    
+    ari = AtomCustomJSONInitializer(atom_init_file)
+    gdf = GaussianDistance(dmin=dmin, dmax=radius, step=step)
+
+    material_id = data["id"]
+    target = data["target"]
+    cif = data["cif"]
+    crystal = Structure.from_str(cif, 'cif')
+    atom_fea = np.vstack([ari.get_atom_fea(crystal[i].specie.number)
+                          for i in range(len(crystal))])
+    #atom_fea = tf.constant(atom_fea)
+    all_nbrs = crystal.get_all_neighbors(radius, include_index=True)
+    all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
+    nbr_fea_idx, nbr_fea = [], []
+    for nbr in all_nbrs:
+        if len(nbr) < max_num_nbr:
+            warnings.warn('{} not find enough neighbors to build graph. '
+                          'If it happens frequently, consider increase '
+                          'radius.'.format(material_id))
+            nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
+                               [0] * (max_num_nbr - len(nbr)))
+            nbr_fea.append(list(map(lambda x: x[1], nbr)) +
+                           [radius + 1.] * (max_num_nbr -
+                                                 len(nbr)))
+        else:
+            nbr_fea_idx.append(list(map(lambda x: x[2],
+                                        nbr[:max_num_nbr])))
+            nbr_fea.append(list(map(lambda x: x[1],
+                                    nbr[:max_num_nbr])))
+    nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
+    nbr_fea = gdf.expand(nbr_fea)
+    #atom_fea = tf.constant(atom_fea, dtype=tf.float64)
+    #nbr_fea = tf.constant(nbr_fea, dtype=tf.float64)
+    #nbr_fea_idx = tf.constant(nbr_fea_idx)
+    #target = tf.constant([float(target)])
+    return (atom_fea, nbr_fea, nbr_fea_idx) , target , material_id
