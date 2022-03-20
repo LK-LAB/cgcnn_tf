@@ -36,7 +36,7 @@ class ConvLayer(tf.keras.Model):
         self.bn1 = tf.keras.layers.BatchNormalization()
         self.bn2 = tf.keras.layers.BatchNormalization()
         self.c = 0
-        
+    
     def call(self, atom_in_fea, nbr_fea, nbr_fea_idx):
         N, M = nbr_fea_idx.shape
         # convolution
@@ -111,6 +111,32 @@ class CrystalGraphConvNet(tf.keras.Model):
             self.dropout = tf.keras.layers.Dropout(rate=0.5)
             #self.logsoftmax = tf.nn.log_softmax(dim=1)
             #self.dropout = nn.Dropout()
+
+    def train_step(self, data):
+        X, y = data
+        with tf.GradientTape() as tape:
+            out = self(X, training=True)
+            loss_ = self.compiled_loss(y, out, regularization_losses=self.losses)
+        grads = tape.gradient(loss_, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))        
+        self.compiled_metrics.update_state(y, out)
+        
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, data):
+        X, y = data
+        with tf.GradientTape() as tape:
+            out = self(X, training=True)
+            loss_ = self.compiled_loss(y, out, regularization_losses=self.losses)       
+        self.compiled_metrics.update_state(y, out)
+        
+        return {m.name: m.result() for m in self.metrics}
+
+
+    def predict_step(self, data):
+        X, y = data
+        out = self(X)
+        return out  
 
     def call(self, inputs):
     #def call(self, atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx):
